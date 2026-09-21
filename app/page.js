@@ -5,15 +5,31 @@ import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 
 import { useRaceSocket } from '../lib/useRaceSocket';
 
 const LANE_COLORS = ['#f97316', '#22d3ee', '#a78bfa', '#4ade80', '#f472b6', '#facc15', '#60a5fa', '#fb7185'];
-// Purely a visual scale for the track — how far a vehicle can travel across
-// the lane before it's considered "at the finish line" on screen.
-const TRACK_MAX_DISTANCE = 1000;
+// Fallback only — the real value comes from the leaderboard payload's
+// finish_distance, since it's operator-tunable server-side (FINISH_LINE_DISTANCE).
+const DEFAULT_FINISH_DISTANCE = 2700;
+const TRACK_MARKERS = [20, 40, 60, 80];
 
 function displayName(entity) {
   return entity.player_name || entity.session_id.slice(0, 8);
 }
 
-function useCountdown(status, endsAt) {
+function useElapsed(status, startedAt) {
+  const [seconds, setSeconds] = useState(null);
+  useEffect(() => {
+    if (status !== 'running' || !startedAt) {
+      setSeconds(null);
+      return undefined;
+    }
+    const tick = () => setSeconds(Math.max(0, Math.round((Date.now() - new Date(startedAt).getTime()) / 1000)));
+    tick();
+    const id = setInterval(tick, 250);
+    return () => clearInterval(id);
+  }, [status, startedAt]);
+  return seconds;
+}
+
+function useSafetyNetCountdown(status, endsAt) {
   const [seconds, setSeconds] = useState(null);
   useEffect(() => {
     if (status !== 'running' || !endsAt) {
@@ -33,7 +49,9 @@ export default function DashboardPage() {
 
   const status = leaderboard?.race_status || 'idle';
   const rankings = leaderboard?.rankings || [];
-  const countdown = useCountdown(status, leaderboard?.race_ends_at);
+  const finishDistance = leaderboard?.finish_distance || DEFAULT_FINISH_DISTANCE;
+  const elapsed = useElapsed(status, leaderboard?.race_started_at);
+  const safetyNet = useSafetyNetCountdown(status, leaderboard?.race_ends_at);
   const winner = status === 'ended' ? rankings[0] : null;
 
   const lanes = Object.values(vehicles).sort((a, b) => (a.session_id > b.session_id ? 1 : -1));
@@ -44,7 +62,12 @@ export default function DashboardPage() {
         <h1 className="text-3xl font-bold tracking-tight">Live Race</h1>
         <div className="text-right">
           {status === 'idle' && <p className="text-xl text-slate-400">Scan the QR code to start racing</p>}
-          {status === 'running' && <p className="text-5xl font-mono tabular-nums">{countdown}s</p>}
+          {status === 'running' && (
+            <>
+              <p className="text-2xl font-bold text-orange-400">First to the finish wins</p>
+              <p className="font-mono text-lg tabular-nums text-slate-300">{elapsed}s elapsed</p>
+            </>
+          )}
           {status === 'ended' && (
             <p className="text-2xl font-bold text-amber-400">
               Race over — winner: {winner ? displayName(winner) : '—'}
@@ -53,25 +76,33 @@ export default function DashboardPage() {
           <p className="mt-1 text-xs text-slate-600">
             {connection === 'open' ? 'live' : connection === 'polling' ? 'reconnecting (polling)' : 'connecting…'}
           </p>
+          {status === 'running' && safetyNet !== null && (
+            <p className="text-[11px] text-slate-700">safety net in {safetyNet}s</p>
+          )}
         </div>
       </header>
 
-      <section className="flex flex-col gap-3">
+      <section className="flex flex-col gap-4">
         {lanes.length === 0 && (
           <p className="text-sm text-slate-600">No active racers yet — scan the QR code to join.</p>
         )}
         {lanes.map((vehicle, i) => {
-          const pct = Math.min(100, (vehicle.distance / TRACK_MAX_DISTANCE) * 100);
+          const pct = Math.min(100, (vehicle.distance / finishDistance) * 100);
           return (
             <div key={vehicle.session_id} className="flex items-center gap-3">
               <span className="w-28 shrink-0 truncate text-sm text-slate-400">{displayName(vehicle)}</span>
-              <div className="relative h-8 flex-1 overflow-hidden rounded-full bg-slate-800">
-                <div className="absolute inset-y-0 left-0 bg-slate-700/60" style={{ width: `${pct}%` }} />
+              <div className="relative h-20 flex-1 overflow-hidden rounded-xl border border-slate-800 bg-slate-900">
+                {TRACK_MARKERS.map((m) => (
+                  <div key={m} className="absolute inset-y-2 w-px bg-slate-800" style={{ left: `${m}%` }} />
+                ))}
                 <div
-                  className="absolute top-1/2 -translate-y-1/2 text-2xl transition-all duration-200 ease-linear"
-                  style={{ left: `calc(${pct}% - 16px)`, color: LANE_COLORS[i % LANE_COLORS.length] }}
+                  className="absolute top-1/2 -translate-y-1/2 text-5xl leading-none transition-all duration-200 ease-linear"
+                  style={{ left: `calc(${pct}% - 28px)`, color: LANE_COLORS[i % LANE_COLORS.length] }}
                 >
                   🏎️
+                </div>
+                <div className="absolute right-3 top-1/2 -translate-y-1/2 text-3xl leading-none" aria-hidden="true">
+                  🏁
                 </div>
               </div>
             </div>
